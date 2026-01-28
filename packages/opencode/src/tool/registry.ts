@@ -123,6 +123,13 @@ export namespace ToolRegistry {
     return all().then((x) => x.map((t) => t.id))
   }
 
+  // Cache for initialized tools, keyed by agent name
+  const toolCache = new Map<string, Array<{ id: string } & Awaited<ReturnType<Tool.Info["init"]>>>>()
+
+  export function clearToolCache() {
+    toolCache.clear()
+  }
+
   export async function tools(
     model: {
       providerID: string
@@ -130,31 +137,46 @@ export namespace ToolRegistry {
     },
     agent?: Agent.Info,
   ) {
-    const tools = await all()
+    const cacheKey = agent?.name ?? "__default__"
+    const cached = toolCache.get(cacheKey)
+    if (cached) {
+      // Filter cached tools based on model requirements
+      return cached.filter((t) => {
+        if (t.id === "codesearch" || t.id === "websearch") {
+          return model.providerID === "opencode" || Flag.OPENCODE_ENABLE_EXA
+        }
+        const usePatch =
+          model.modelID.includes("gpt-") && !model.modelID.includes("oss") && !model.modelID.includes("gpt-4")
+        if (t.id === "apply_patch") return usePatch
+        if (t.id === "edit" || t.id === "write") return !usePatch
+        return true
+      })
+    }
+
+    const allTools = await all()
     const result = await Promise.all(
-      tools
-        .filter((t) => {
-          // Enable websearch/codesearch for zen users OR via enable flag
-          if (t.id === "codesearch" || t.id === "websearch") {
-            return model.providerID === "opencode" || Flag.OPENCODE_ENABLE_EXA
-          }
-
-          // use apply tool in same format as codex
-          const usePatch =
-            model.modelID.includes("gpt-") && !model.modelID.includes("oss") && !model.modelID.includes("gpt-4")
-          if (t.id === "apply_patch") return usePatch
-          if (t.id === "edit" || t.id === "write") return !usePatch
-
-          return true
-        })
-        .map(async (t) => {
-          using _ = log.time(t.id)
-          return {
-            id: t.id,
-            ...(await t.init({ agent })),
-          }
-        }),
+      allTools.map(async (t) => {
+        using _ = log.time(t.id)
+        return {
+          id: t.id,
+          ...(await t.init({ agent })),
+        }
+      }),
     )
-    return result
+
+    // Cache all initialized tools
+    toolCache.set(cacheKey, result)
+
+    // Return filtered tools based on model
+    return result.filter((t) => {
+      if (t.id === "codesearch" || t.id === "websearch") {
+        return model.providerID === "opencode" || Flag.OPENCODE_ENABLE_EXA
+      }
+      const usePatch =
+        model.modelID.includes("gpt-") && !model.modelID.includes("oss") && !model.modelID.includes("gpt-4")
+      if (t.id === "apply_patch") return usePatch
+      if (t.id === "edit" || t.id === "write") return !usePatch
+      return true
+    })
   }
 }

@@ -12,6 +12,7 @@ import { Instance } from "../project/instance"
 import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
+import { Perf } from "@game-agent/perf"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -351,6 +352,7 @@ export namespace File {
   }
 
   export async function status() {
+    using timer = Perf.time("file", "status")
     const project = Instance.project
     if (project.vcs !== "git") return []
 
@@ -492,6 +494,7 @@ export namespace File {
   }
 
   export async function list(dir?: string) {
+    using timer = Perf.time("file", "list")
     const exclude = [".git", ".DS_Store"]
     const project = Instance.project
     let ignored = (_: string) => false
@@ -542,6 +545,7 @@ export namespace File {
   }
 
   export async function search(input: { query: string; limit?: number; dirs?: boolean; type?: "file" | "directory" }) {
+    using timer = Perf.time("file", "search")
     const query = input.query.trim()
     const limit = input.limit ?? 100
     const kind = input.type ?? (input.dirs === false ? "file" : "all")

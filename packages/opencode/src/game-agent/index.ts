@@ -50,6 +50,7 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       const part = event.properties.part
       
       if (part.sessionID !== session.id) return
+      // filter out user prompt
       if (part.messageID === messageID) return
       
       if (part.type === "text") {

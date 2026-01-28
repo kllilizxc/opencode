@@ -3,6 +3,7 @@ import type { MessageV2 } from "../session/message-v2"
 import type { Agent } from "../agent/agent"
 import type { PermissionNext } from "../permission/next"
 import { Truncate } from "./truncation"
+import { Perf } from "@game-agent/perf"
 
 export namespace Tool {
   interface Metadata {
@@ -55,6 +56,7 @@ export namespace Tool {
         const toolInfo = init instanceof Function ? await init(initCtx) : init
         const execute = toolInfo.execute
         toolInfo.execute = async (args, ctx) => {
+          using timer = Perf.time("tool", id)
           try {
             toolInfo.parameters.parse(args)
           } catch (error) {

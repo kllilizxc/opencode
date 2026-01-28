@@ -101,24 +101,34 @@ export namespace SessionProcessor {
                   break
 
                 case "tool-input-start":
-                  const part = await Session.updatePart({
-                    id: toolcalls[value.id]?.id ?? Identifier.ascending("part"),
-                    messageID: input.assistantMessage.id,
-                    sessionID: input.assistantMessage.sessionID,
-                    type: "tool",
-                    tool: value.toolName,
-                    callID: value.id,
-                    state: {
-                      status: "pending",
-                      input: {},
-                      raw: "",
-                    },
-                  })
-                  toolcalls[value.id] = part as MessageV2.ToolPart
+                  // Check if already created by raw event
+                  if (!toolcalls[value.id]) {
+                    const part = await Session.updatePart({
+                      id: Identifier.ascending("part"),
+                      messageID: input.assistantMessage.id,
+                      sessionID: input.assistantMessage.sessionID,
+                      type: "tool",
+                      tool: value.toolName,
+                      callID: value.id,
+                      state: {
+                        status: "pending",
+                        input: {},
+                        raw: "",
+                      },
+                    })
+                    toolcalls[value.id] = part as MessageV2.ToolPart
+                  }
                   break
 
-                case "tool-input-delta":
+                case "tool-input-delta": {
+                  // Accumulate streaming tool arguments into the raw field
+                  const deltaPart = toolcalls[value.id]
+                  if (deltaPart && deltaPart.state.status === "pending") {
+                    deltaPart.state.raw += value.delta
+                    await Session.updatePart(deltaPart)
+                  }
                   break
+                }
 
                 case "tool-input-end":
                   break
@@ -352,7 +362,7 @@ export namespace SessionProcessor {
                 message: retry,
                 next: Date.now() + delay,
               })
-              await SessionRetry.sleep(delay, input.abort).catch(() => {})
+              await SessionRetry.sleep(delay, input.abort).catch(() => { })
               continue
             }
             input.assistantMessage.error = error
