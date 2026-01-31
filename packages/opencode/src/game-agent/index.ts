@@ -10,6 +10,7 @@ import { Bus } from "@/bus"
 import { MessageV2 } from "@/session/message-v2"
 import { Log } from "@/util/log"
 import { Identifier } from "@/id/id"
+import { Instance } from "@/project/instance"
 
 export { bootstrap, Session, SessionPrompt, Provider, Agent, Bus, MessageV2, Log }
 
@@ -18,6 +19,8 @@ export interface RunInput {
   system?: string
   agent?: string
   model?: string
+  /** Optional session ID to reuse - enables message history persistence */
+  sessionId?: string
 }
 
 export interface AgentEvent {
@@ -37,22 +40,42 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
   await Log.init({ print: true, level: "INFO" })
 
   return bootstrap(cwd, async () => {
-    const model = input.model 
+    const model = input.model
       ? Provider.parseModel(input.model)
       : await Provider.defaultModel()
-    
+
     const agentName = input.agent ?? await Agent.defaultAgent()
 
-    const session = await Session.create({})
-    onEvent?.({ type: "session", sessionId: session.id })
+    // Reuse existing session or create new one
+    let session: Session.Info
+    let isNewSession = false
+
+    if (input.sessionId) {
+      const existing = await Session.get(input.sessionId)
+      if (existing) {
+        session = existing
+        Log.create({ service: "game-agent" }).info(`Resuming session ${session.id}`)
+      } else {
+        // Session ID provided but not found - create new with that ID
+        session = await Session.createNext({ id: input.sessionId, directory: Instance.directory })
+        isNewSession = true
+        Log.create({ service: "game-agent" }).info(`Created new session with provided ID ${session.id}`)
+      }
+    } else {
+      session = await Session.create({})
+      isNewSession = true
+    }
+
+    onEvent?.({ type: "session", sessionId: session.id, data: { isNewSession } })
+
     const messageID = Identifier.ascending("message")
     const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
       const part = event.properties.part
-      
+
       if (part.sessionID !== session.id) return
       // filter out user prompt
       if (part.messageID === messageID) return
-      
+
       if (part.type === "text") {
         if (part.time?.end) {
           // Final complete text
@@ -62,12 +85,12 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
           onEvent?.({ type: "text-delta", sessionId: session.id, data: { text: part.text, id: part.id } })
         }
       }
-      
+
       if (part.type === "tool") {
-        const title = part.state.status === "running" || part.state.status === "completed" 
+        const title = part.state.status === "running" || part.state.status === "completed"
           ? part.state.title || JSON.stringify(part.state.input)
           : JSON.stringify(part.state.input)
-        
+
         if (part.state.status === "completed") {
           onEvent?.({ type: "tool", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID } })
         } else if (part.state.status === "running" || part.state.status === "pending") {
