@@ -87,14 +87,28 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       }
 
       if (part.type === "tool") {
-        const title = part.state.status === "running" || part.state.status === "completed"
-          ? part.state.title || JSON.stringify(part.state.input)
-          : JSON.stringify(part.state.input)
+        // Generate a meaningful title for the tool
+        let title = (part.state as any).title as string | undefined
+        if (!title) {
+          const input = part.state.input
+          // Special handling for todowrite to show todo count
+          if (part.tool === "todowrite" && input?.todos && Array.isArray(input.todos)) {
+            const pendingCount = input.todos.filter((t: any) => t.status !== "completed").length
+            title = `${pendingCount} todos`
+          } else if (input && typeof input === "object" && Object.keys(input).length > 0) {
+            title = JSON.stringify(input)
+          } else {
+            title = "" // Don't show "{}" for empty inputs
+          }
+        }
+
+        // Get metadata (contains todos for todowrite, etc.)
+        const metadata = (part.state as any).metadata
 
         if (part.state.status === "completed") {
-          onEvent?.({ type: "tool", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID } })
+          onEvent?.({ type: "tool", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
         } else if (part.state.status === "running" || part.state.status === "pending") {
-          onEvent?.({ type: "tool-start", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID } })
+          onEvent?.({ type: "tool-start", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
         }
       }
     })
