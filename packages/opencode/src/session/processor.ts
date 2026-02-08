@@ -50,10 +50,16 @@ export namespace SessionProcessor {
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
+            const startTime = Date.now()
+            const log = (eventType: string, details?: string) => {
+              const elapsed = Date.now() - startTime
+              console.log(`[LLM] +${elapsed}ms ${Date.now()} ${eventType}${details ? `: ${details}` : ''}`)
+            }
             const stream = await LLM.stream(streamInput)
 
             for await (const value of stream.fullStream) {
               input.abort.throwIfAborted()
+              log(value.type, `len=${(currentText?.text || '' + (value as any).text || '').length}`)
               switch (value.type) {
                 case "start":
                   SessionStatus.set(input.sessionID, { type: "busy" })

@@ -69,6 +69,12 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
     onEvent?.({ type: "session", sessionId: session.id, data: { isNewSession } })
 
     const messageID = Identifier.ascending("message")
+    const startTime = Date.now()
+    const log = (eventType: string, details?: string) => {
+      const elapsed = Date.now() - startTime
+      console.log(`[game-agent] +${elapsed}ms ${Date.now()} ${eventType}${details ? `: ${details}` : ''}`)
+    }
+
     const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
       const part = event.properties.part
 
@@ -79,10 +85,12 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       if (part.type === "text") {
         if (part.time?.end) {
           // Final complete text
+          log("text", `len=${part.text.length}`)
           onEvent?.({ type: "text", sessionId: session.id, data: { text: part.text } })
         } else {
           // Streaming delta
-          onEvent?.({ type: "text-delta", sessionId: session.id, data: { text: part.text, id: part.id } })
+          log("text-delta", `len=${part.text.length}`)
+          onEvent?.({ type: "text-delta", sessionId: session.id, data: { text: part.text, id: part.id, messageID: part.messageID } })
         }
       }
 
@@ -106,8 +114,10 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
         const metadata = (part.state as any).metadata
 
         if (part.state.status === "completed") {
+          log("tool", `${part.tool} completed`)
           onEvent?.({ type: "tool", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
         } else if (part.state.status === "running" || part.state.status === "pending") {
+          log("tool-start", `${part.tool} ${part.state.status}`)
           onEvent?.({ type: "tool-start", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
         }
       }
