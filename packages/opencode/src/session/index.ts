@@ -317,10 +317,17 @@ export namespace Session {
     z.object({
       sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
+      offset: z.number().optional(),
     }),
     async (input) => {
       const result = [] as MessageV2.WithParts[]
+      let skipped = 0
       for await (const msg of MessageV2.stream(input.sessionID)) {
+        // Skip offset messages first
+        if (input.offset && skipped < input.offset) {
+          skipped++
+          continue
+        }
         if (input.limit && result.length >= input.limit) break
         result.push(msg)
       }
@@ -357,7 +364,7 @@ export namespace Session {
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
-      await unshare(sessionID).catch(() => {})
+      await unshare(sessionID).catch(() => { })
       for (const msg of await Storage.list(["message", sessionID])) {
         for (const part of await Storage.list(["part", msg.at(-1)!])) {
           await Storage.remove(part)
