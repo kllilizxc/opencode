@@ -16,6 +16,7 @@ export { bootstrap, Session, SessionPrompt, Provider, Agent, Bus, MessageV2, Log
 
 export interface RunInput {
   prompt: string
+  attachments?: string[]
   system?: string
   agent?: string
   model?: string
@@ -123,6 +124,32 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       }
     })
 
+    const parts: any[] = [{ type: "text", text: input.prompt }]
+    if (input.attachments) {
+      for (const attachment of input.attachments) {
+        let mime = "image/jpeg"
+        let url = attachment
+
+        if (attachment.startsWith("data:")) {
+          const matches = attachment.match(/^data:([^;]+);base64,(.+)$/)
+          if (matches) {
+            mime = matches[1]
+            // We can keep the URL as is, or reconstruct it if we want to be safe, 
+            // but for now let's just use the attachment string which is already a data URL.
+          }
+        } else {
+          // Fallback for raw base64 (if any legacy clients or direct calls)
+          url = `data:${mime};base64,${attachment}`
+        }
+
+        parts.push({
+          type: "file",
+          mime,
+          url,
+        })
+      }
+    }
+
     const result = await SessionPrompt.prompt({
       messageID,
       sessionID: session.id,
@@ -132,7 +159,7 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       },
       agent: agentName,
       system: input.system,
-      parts: [{ type: "text", text: input.prompt }],
+      parts,
     })
 
     unsub()
