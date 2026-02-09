@@ -345,7 +345,7 @@ export namespace SessionProcessor {
                   break
 
                 default:
-                  log.info("unhandled", {
+                  console.log("unhandled", {
                     ...value,
                   })
                   continue
