@@ -2,7 +2,8 @@ import { marked } from "marked"
 import markedKatex from "marked-katex-extension"
 import markedShiki from "marked-shiki"
 import katex from "katex"
-import { bundledLanguages, type BundledLanguage } from "shiki"
+import { bundledLanguages, type BundledLanguage, createHighlighter, type HighlighterGeneric } from "shiki"
+import { createOnigurumaEngine } from "shiki/engine/oniguruma"
 import { createSimpleContext } from "./helper"
 import { getSharedHighlighter, registerCustomTheme, ThemeRegistrationResolved } from "@pierre/diffs"
 
@@ -376,6 +377,26 @@ registerCustomTheme("OpenCode", () => {
   } as unknown as ThemeRegistrationResolved)
 })
 
+let markdownHighlighter: HighlighterGeneric<any, any> | Promise<HighlighterGeneric<any, any>> | undefined
+
+export async function getMarkdownHighlighter() {
+  if (markdownHighlighter) {
+    if ("then" in markdownHighlighter) return markdownHighlighter
+    return markdownHighlighter
+  }
+  const shared = await getSharedHighlighter({ themes: ["OpenCode"], langs: [] })
+  const theme = shared.getTheme("OpenCode")
+  const promise = createHighlighter({
+    themes: [theme],
+    langs: ["text"],
+    engine: createOnigurumaEngine(import("shiki/wasm")),
+  })
+  markdownHighlighter = promise
+  const instance = await promise
+  markdownHighlighter = instance
+  return instance
+}
+
 function renderMathInText(text: string): string {
   let result = text
 
@@ -423,12 +444,12 @@ function renderMathExpressions(html: string): string {
     .join("")
 }
 
-async function highlightCodeBlocks(html: string): Promise<string> {
+export async function highlightCodeBlocks(html: string): Promise<string> {
   const codeBlockRegex = /<pre><code(?:\s+class="language-([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g
   const matches = [...html.matchAll(codeBlockRegex)]
   if (matches.length === 0) return html
 
-  const highlighter = await getSharedHighlighter({ themes: ["OpenCode"], langs: [] })
+  const highlighter = await getMarkdownHighlighter()
 
   let result = html
   for (const match of matches) {
@@ -444,16 +465,20 @@ async function highlightCodeBlocks(html: string): Promise<string> {
     if (!(language in bundledLanguages)) {
       language = "text"
     }
-    if (!highlighter.getLoadedLanguages().includes(language)) {
-      await highlighter.loadLanguage(language as BundledLanguage)
-    }
 
-    const highlighted = highlighter.codeToHtml(code, {
-      lang: language,
-      theme: "OpenCode",
-      tabindex: false,
-    })
-    result = result.replace(fullMatch, () => highlighted)
+    try {
+      if (!highlighter.getLoadedLanguages().includes(language)) {
+        await highlighter.loadLanguage(language as BundledLanguage)
+      }
+      const highlighted = highlighter.codeToHtml(code, {
+        lang: language,
+        theme: "OpenCode",
+        tabindex: false,
+      })
+      result = result.replace(fullMatch, () => highlighted)
+    } catch (err) {
+      console.warn("[markdown] highlight failed for lang=%s, falling back to plain text:", language, err)
+    }
   }
 
   return result
@@ -479,7 +504,7 @@ export const { use: useMarked, provider: MarkedProvider } = createSimpleContext(
       }),
       markedShiki({
         async highlight(code, lang) {
-          const highlighter = await getSharedHighlighter({ themes: ["OpenCode"], langs: [] })
+          const highlighter = await getMarkdownHighlighter()
           if (!(lang in bundledLanguages)) {
             lang = "text"
           }
