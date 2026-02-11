@@ -11,8 +11,9 @@ import { MessageV2 } from "@/session/message-v2"
 import { Log } from "@/util/log"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
+import { Config } from "@/config/config"
 
-export { bootstrap, Session, SessionPrompt, Provider, Agent, Bus, MessageV2, Log }
+export { bootstrap, Session, SessionPrompt, Provider, Agent, Bus, MessageV2, Log, Instance, Config }
 
 export interface RunInput {
   prompt: string
@@ -44,7 +45,6 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
     const model = input.model
       ? Provider.parseModel(input.model)
       : await Provider.defaultModel()
-
     const agentName = input.agent ?? await Agent.defaultAgent()
 
     // Reuse existing session or create new one
@@ -76,53 +76,91 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       console.log(`[game-agent] +${elapsed}ms ${Date.now()} ${eventType}${details ? `: ${details}` : ''}`)
     }
 
-    const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
-      const part = event.properties.part
+    const unsubs: (() => void)[] = []
 
-      if (part.sessionID !== session.id) return
-      // filter out user prompt
-      if (part.messageID === messageID) return
+    unsubs.push(
+      Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
+        const part = event.properties.part
 
-      if (part.type === "text") {
-        if (part.time?.end) {
-          // Final complete text
-          log("text", `len=${part.text.length}`)
-          onEvent?.({ type: "text", sessionId: session.id, data: { text: part.text } })
-        } else {
-          // Streaming delta
-          log("text-delta", `len=${part.text.length}`)
-          onEvent?.({ type: "text-delta", sessionId: session.id, data: { text: part.text, id: part.id, messageID: part.messageID } })
-        }
-      }
+        if (part.sessionID !== session.id) return
+        // filter out user prompt
+        if (part.messageID === messageID) return
 
-      if (part.type === "tool") {
-        // Generate a meaningful title for the tool
-        let title = (part.state as any).title as string | undefined
-        if (!title) {
-          const input = part.state.input
-          // Special handling for todowrite to show todo count
-          if (part.tool === "todowrite" && input?.todos && Array.isArray(input.todos)) {
-            const pendingCount = input.todos.filter((t: any) => t.status !== "completed").length
-            title = `${pendingCount} todos`
-          } else if (input && typeof input === "object" && Object.keys(input).length > 0) {
-            title = JSON.stringify(input)
+        if (part.type === "text") {
+          if (part.time?.end) {
+            // Final complete text
+            log("text", `len=${part.text.length}`)
+            onEvent?.({ type: "text", sessionId: session.id, data: { text: part.text } })
           } else {
-            title = "" // Don't show "{}" for empty inputs
+            // Streaming delta
+            log("text-delta", `len=${part.text.length}`)
+            onEvent?.({
+              type: "text-delta",
+              sessionId: session.id,
+              data: { text: part.text, id: part.id, messageID: part.messageID },
+            })
           }
         }
 
-        // Get metadata (contains todos for todowrite, etc.)
-        const metadata = (part.state as any).metadata
+        if (part.type === "tool") {
+          // Generate a meaningful title for the tool
+          let title = (part.state as any).title as string | undefined
+          if (!title) {
+            const input = part.state.input
+            // Special handling for todowrite to show todo count
+            if (part.tool === "todowrite" && input?.todos && Array.isArray(input.todos)) {
+              const pendingCount = input.todos.filter((t: any) => t.status !== "completed").length
+              title = `${pendingCount} todos`
+            } else if (input && typeof input === "object" && Object.keys(input).length > 0) {
+              title = JSON.stringify(input)
+            } else {
+              title = "" // Don't show "{}" for empty inputs
+            }
+          }
 
-        if (part.state.status === "completed") {
-          log("tool", `${part.tool} completed`)
-          onEvent?.({ type: "tool", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
-        } else if (part.state.status === "running" || part.state.status === "pending") {
-          log("tool-start", `${part.tool} ${part.state.status}`)
-          onEvent?.({ type: "tool-start", sessionId: session.id, data: { tool: part.tool, title, callId: part.callID, metadata } })
+          // Get metadata (contains todos for todowrite, etc.)
+          const metadata = (part.state as any).metadata
+
+          if (part.state.status === "completed") {
+            log("tool", `${part.tool} completed`)
+            onEvent?.({
+              type: "tool",
+              sessionId: session.id,
+              data: { tool: part.tool, title, callId: part.callID, metadata },
+            })
+          } else if (part.state.status === "running" || part.state.status === "pending") {
+            log("tool-start", `${part.tool} ${part.state.status}`)
+            onEvent?.({
+              type: "tool-start",
+              sessionId: session.id,
+              data: { tool: part.tool, title, callId: part.callID, metadata },
+            })
+          }
         }
-      }
-    })
+      }),
+    )
+
+    unsubs.push(
+      Bus.subscribe(Session.Event.Error, async (event) => {
+        if (event.properties.sessionID !== session.id) return
+        const error = event.properties.error
+        const message = (error as any)?.data?.message || (error as any)?.message || "Unknown error"
+        log("error", `session error: ${message}`)
+        onEvent?.({ type: "error", sessionId: session.id, data: { error } })
+      }),
+    )
+
+    unsubs.push(
+      Bus.subscribe(MessageV2.Event.Updated, async (event) => {
+        const msg = event.properties.info
+        if (msg.sessionID !== session.id) return
+        if (msg.role === "assistant" && msg.error) {
+          const message = (msg.error as any)?.data?.message || (msg.error as any)?.message || "Unknown error"
+          log("error", `message error: ${message}`)
+          onEvent?.({ type: "error", sessionId: session.id, data: { error: msg.error } })
+        }
+      }),
+    )
 
     const parts: any[] = [{ type: "text", text: input.prompt }]
     if (input.attachments) {
@@ -162,7 +200,7 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       parts,
     })
 
-    unsub()
+    unsubs.forEach((unsub) => unsub())
 
     const finishReason = result.info.role === "assistant" ? result.info.finish : "unknown"
     onEvent?.({ type: "finished", sessionId: session.id, data: { finishReason } })

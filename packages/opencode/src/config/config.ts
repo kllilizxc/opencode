@@ -64,6 +64,12 @@ export namespace Config {
     return merged
   }
 
+
+  let overrides: Info | undefined
+  export function override(config: Info) {
+    overrides = config
+  }
+
   export const state = Instance.state(async () => {
     const auth = await Auth.all()
 
@@ -74,6 +80,7 @@ export namespace Config {
     // 4) Project config (opencode.json{,c})
     // 5) .opencode directories (.opencode/agents/, .opencode/commands/, .opencode/plugins/, .opencode/opencode.json{,c})
     // 6) Inline config (OPENCODE_CONFIG_CONTENT)
+    // 7) Programmatic overrides (Config.override)
     // Managed config directory is enterprise-only and always overrides everything above.
     let result: Info = {}
     for (const [key, value] of Object.entries(auth)) {
@@ -124,12 +131,12 @@ export namespace Config {
       // Only scan project .opencode/ directories when project discovery is enabled
       ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
         ? await Array.fromAsync(
-            Filesystem.up({
-              targets: [".opencode"],
-              start: Instance.directory,
-              stop: Instance.worktree,
-            }),
-          )
+          Filesystem.up({
+            targets: [".opencode"],
+            start: Instance.directory,
+            stop: Instance.worktree,
+          }),
+        )
         : []),
       // Always scan ~/.opencode/ (user home directory)
       ...(await Array.fromAsync(
@@ -178,6 +185,12 @@ export namespace Config {
     if (Flag.OPENCODE_CONFIG_CONTENT) {
       result = mergeConfigConcatArrays(result, JSON.parse(Flag.OPENCODE_CONFIG_CONTENT))
       log.debug("loaded custom config from OPENCODE_CONFIG_CONTENT")
+    }
+
+    // Programmatic overrides via Config.override()
+    if (overrides) {
+      result = mergeConfigConcatArrays(result, overrides)
+      log.debug("loaded programmatic config overrides")
     }
 
     // Load managed config files last (highest priority) - enterprise admin-controlled
@@ -276,7 +289,7 @@ export namespace Config {
         ...(proxied() ? ["--no-cache"] : []),
       ],
       { cwd: dir },
-    ).catch(() => {})
+    ).catch(() => { })
   }
 
   async function isWritable(dir: string) {
@@ -1215,7 +1228,7 @@ export namespace Config {
           await Bun.write(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
           await fs.unlink(legacy)
         })
-        .catch(() => {})
+        .catch(() => { })
     }
 
     return result
@@ -1306,7 +1319,7 @@ export namespace Config {
         parsed.data.$schema = "https://opencode.ai/config.json"
         // Write the $schema to the original text to preserve variables like {env:VAR}
         const updated = original.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
-        await Bun.write(configFilepath, updated).catch(() => {})
+        await Bun.write(configFilepath, updated).catch(() => { })
       }
       const data = parsed.data
       if (data.plugin) {
@@ -1314,7 +1327,7 @@ export namespace Config {
           const plugin = data.plugin[i]
           try {
             data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
-          } catch (err) {}
+          } catch (err) { }
         }
       }
       return data
