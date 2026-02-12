@@ -172,9 +172,15 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
           const matches = attachment.match(/^data:([^;]+);base64,(.+)$/)
           if (matches) {
             mime = matches[1]
-            // We can keep the URL as is, or reconstruct it if we want to be safe, 
-            // but for now let's just use the attachment string which is already a data URL.
           }
+        } else if (
+          attachment.startsWith("/") ||
+          attachment.startsWith("http") ||
+          attachment.startsWith("workspaces/") ||
+          attachment.includes("/workspaces/")
+        ) {
+          // Already a URL or path, don't prefix with data:
+          url = attachment
         } else {
           // Fallback for raw base64 (if any legacy clients or direct calls)
           url = `data:${mime};base64,${attachment}`
