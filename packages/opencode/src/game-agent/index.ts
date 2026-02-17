@@ -25,6 +25,44 @@ export interface RunInput {
   sessionId?: string
 }
 
+import { ToolRegistry } from "@/tool/registry"
+import { Tool } from "@/tool/tool"
+import { z } from "zod"
+import { type ToolDefinition, type ToolContext as PluginToolContext } from "@opencode-ai/plugin"
+import GenerateImage from "./tools/generate-image"
+
+function fromPlugin(id: string, def: ToolDefinition): Tool.Info {
+  return {
+    id,
+    init: async (initCtx) => ({
+      parameters: z.object(def.args),
+      description: def.description,
+      execute: async (args, ctx) => {
+        const pluginCtx = {
+          ...ctx,
+          directory: Instance.directory,
+          worktree: Instance.worktree,
+        } as unknown as PluginToolContext
+        const result = await def.execute(args as any, pluginCtx)
+
+        // Simple truncation or just return result
+        // Accessing Truncate might be tricky if not exported, but let's check imports
+        // Truncate is in ../tool/truncation
+
+        return {
+          title: "",
+          output: result,
+          metadata: {}
+        }
+      },
+    }),
+  }
+}
+
+// Register tool inside run() to ensure instance context
+
+
+
 export interface AgentEvent {
   type: "session" | "text" | "text-delta" | "tool" | "tool-start" | "finished" | "error"
   sessionId?: string
@@ -46,6 +84,9 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       ? Provider.parseModel(input.model)
       : await Provider.defaultModel()
     const agentName = input.agent ?? await Agent.defaultAgent()
+
+    // Register custom tools for this instance
+    await ToolRegistry.register(fromPlugin("generate_image", GenerateImage))
 
     // Reuse existing session or create new one
     let session: Session.Info
