@@ -1,25 +1,29 @@
 import z from "zod"
-import path from "path"
+import path, { format } from "path"
 import fs from "fs/promises"
 
 // Plugin-style tool definition
 export default {
     description: `generate_image(prompt: string, size?: string)
 
-- prompt: A detailed text description of the image you want to generate.
+- prompt: A detailed text description of the image you want to generate. NO NEED to mention transparent background(or anything similar) for pngs!
 - size: Optional. The size of the image to generate (support: "1024x1024" (1:1), "1280x720" (16:9), "720x1280" (9:16), "1216x896" (4:3)). Defaults to "1024x1024".
+- format: Optional. The format of image file (support: "jpg", "png"), default: "jpg".
 
 ## Examples
 
-generate_image(prompt: "A futuristic city with flying cars at sunset", size: "1280x720")
-generate_image(prompt: "A cute pixel art cat", size: "1024x1024")
+generate_image(prompt: "A futuristic city with flying cars at sunset", size: "1280x720", "jpg")
+generate_image(prompt: "A cute pixel art cat", size: "1024x1024", "png")
 `,
     args: {
-        prompt: z.string().describe("The text prompt to generate an image for"),
+        prompt: z.string().describe("The text prompt to generate an image for. NO NEED to mention transparent background(or anything similar) for pngs!"),
         size: z
             .enum(["1024x1024", "1280x720", "720x1280", "1216x896"])
             .optional()
             .describe('The size of the image (default: "1024x1024"). Support: "1024x1024", "1280x720", "720x1280", "1216x896"'),
+        format: z.enum(["jpg", "png"])
+            .optional()
+            .describe('The format of image file, default: "jpg"')
     },
     async execute(params: any, ctx: any) {
         await ctx.ask({
@@ -29,6 +33,7 @@ generate_image(prompt: "A cute pixel art cat", size: "1024x1024")
             metadata: {
                 prompt: params.prompt,
                 size: params.size,
+                format: params.format
             },
         })
 
@@ -43,11 +48,14 @@ generate_image(prompt: "A cute pixel art cat", size: "1024x1024")
         const model = "gemini-3-pro-image"
 
         try {
+            // Append green background instruction to prompt for easier removal
+            const promptWithGreenScreen = `${params.prompt}${params.format === 'png' ? ', solid green background (#00FF00)' : ''}`
+
             const response = await client.chat.completions.create({
                 model: model,
                 messages: [{
                     "role": "user",
-                    "content": params.prompt
+                    "content": promptWithGreenScreen
                 }],
                 tools: [{
                     type: "function",
@@ -130,6 +138,20 @@ generate_image(prompt: "A cute pixel art cat", size: "1024x1024")
             else {
                 throw new Error(`Invalid image URL format: ${extractedUrl.slice(0, 50)}...`)
             }
+
+            // --- Green Screen Removal Logic ---
+            if (params.format === 'png' || !params.format) {
+                if (params.format === 'png') {
+                    try {
+                        const { removeGreenBackground } = await import("@game-agent/common")
+                        buffer = await removeGreenBackground(buffer, 205)
+                        console.log("[GenerateImage] Green screen removal processed")
+                    } catch (error: any) {
+                        console.warn("[GenerateImage] Failed to process green screen removal, saving original:", error.message)
+                    }
+                }
+            }
+            // ----------------------------------
 
             const fileName = `generated-${Date.now()}.png`
             const relativePath = path.join("assets", "generated", fileName)
