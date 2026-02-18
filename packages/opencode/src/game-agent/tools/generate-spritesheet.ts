@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import { shortId, genGridGuide, generateImage, removeGreenBackground, Jimp } from "@game-agent/common"
 
 export default {
-    description: `generate_spritesheet(prompt: string, grid: string, characterDesign ?: string, loop ?: boolean)
+    description: `generate_spritesheet(prompt: string, grid: string, characterDesign ?: string, loop ?: boolean, filename ?: string)
 
 Generates a spritesheet with a specific grid layout(e.g. 2x2, 4x4).
 The system will generate a single 1024x1024(or similar size based on content) image containing the grid of sprites in PNG format.
@@ -14,13 +14,14 @@ This is useful for game assets where you need multiple related sprites(frames of
 
 generate_spritesheet(prompt: "A walking cycle of a robot", grid: "4x4")
 generate_spritesheet(prompt: "Different fruit icons", grid: "3x3")
-generate_spritesheet(prompt: "Attack animation based on character design", grid: "3x3", characterDesign: "assets/hero.png")
+generate_spritesheet(prompt: "Attack animation based on character design", grid: "3x3", characterDesign: "assets/hero.png", filename: "attack")
     `,
     args: {
         prompt: z.string().describe("The text description of the spritesheet content."),
         grid: z.string().describe('The grid layout, e.g. "1x1", "2x2", "3x4" (cols x rows). Default "2x2".'),
         loop: z.boolean().optional().describe("Whether the spritesheet should form a looping animation."),
-        characterDesign: z.string().optional().describe("Path to an existing character design image to use as a base/reference.")
+        characterDesign: z.string().optional().describe("Path to an existing character design image to use as a base/reference."),
+        filename: z.string().optional().describe("Optional filename for the generated spritesheet. If provided, the file will be saved with this name in assets/generated.")
     },
     async execute(params: any, ctx: any) {
         await ctx.ask({
@@ -31,7 +32,8 @@ generate_spritesheet(prompt: "Attack animation based on character design", grid:
                 prompt: params.prompt,
                 grid: params.grid,
                 loop: params.loop,
-                characterDesign: params.characterDesign
+                characterDesign: params.characterDesign,
+                filename: params.filename
             },
         })
 
@@ -110,7 +112,7 @@ generate_spritesheet(prompt: "Attack animation based on character design", grid:
                 imageSize: "1K"
             })
 
-            let buffer = Buffer.from(content, "base64")
+            let buffer = Buffer.from(content, "base64") as any
 
             // Grid cleanup (remove black lines)
             if (gridCleanup) {
@@ -137,7 +139,8 @@ generate_spritesheet(prompt: "Attack animation based on character design", grid:
             // Only PNG output
             buffer = await img.getBuffer("image/png")
 
-            const fileName = `spritesheet-${shortId()}-${w}x${h}-${cols}x${rows}.png`
+            const fileId = params.filename || `spritesheet-${shortId()}`
+            const fileName = `${fileId}-${w}x${h}-${cols}x${rows}.png`
             const relativePath = path.join("assets", "generated", fileName)
             const absolutePath = path.join(ctx.worktree, relativePath)
 
