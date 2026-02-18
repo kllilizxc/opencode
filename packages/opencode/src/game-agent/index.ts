@@ -30,6 +30,7 @@ import { Tool } from "@/tool/tool"
 import { z } from "zod"
 import { type ToolDefinition, type ToolContext as PluginToolContext } from "@opencode-ai/plugin"
 import GenerateImage from "./tools/generate-image"
+import GenerateSpritesheet from "./tools/generate-spritesheet"
 
 function fromPlugin(id: string, def: ToolDefinition): Tool.Info {
   return {
@@ -87,6 +88,7 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
 
     // Register custom tools for this instance
     await ToolRegistry.register(fromPlugin("generate_image", GenerateImage))
+    await ToolRegistry.register(fromPlugin("generate_spritesheet", GenerateSpritesheet))
 
     // Reuse existing session or create new one
     let session: Session.Info

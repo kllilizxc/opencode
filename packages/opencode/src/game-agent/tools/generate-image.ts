@@ -40,14 +40,11 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
         })
 
         // Dynamic import to avoid build issues if package is missing in this workspace
-        const { OpenAI, toFile } = await import("openai")
+        // const { OpenAI } = await import("openai") // No longer needed directly
 
-        const client = new OpenAI({
-            baseURL: process.env.NANOBANANA_BASE_URL || "http://127.0.0.1:8045/v1",
-            apiKey: process.env.NANOBANANA_API_KEY || "sk-0c30858760cf47fe9d6e438da54d3808",
-        })
+        // const client = new OpenAI({ ... }) // Handled in common util
 
-        const model = "gemini-3-pro-image"
+
 
         // Helper to parse aspect ratio
         let targetRatio = 1
@@ -102,25 +99,15 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
 
             console.log(`[GenerateImage] Target Ratio: ${targetRatio}, ROI: ${cropW}x${cropH} centered in 1024x1024.`)
 
-            let response
-            try {
-                response = await client.images.edit({
-                    model: model,
-                    image: await toFile(imageBuffer, "guide.png"),
-                    prompt: modifiedPrompt,
-                    n: 1,
-                    // We must use 1024x1024 as the canvas size for the API
-                    size: "1024x1024",
-                    response_format: "b64_json"
-                } as any)
-            } finally {
-                // No cleanup needed
-            }
+            // Use common utility
+            const { generateImage } = await import("@game-agent/common")
 
-            const content = response.data?.[0]?.b64_json
-            if (!content) {
-                throw new Error("No content received from image generation model")
-            }
+            const content = await generateImage({
+                type: "google",
+                images: [imageBuffer],
+                imageName: "guide.png",
+                prompt: modifiedPrompt
+            })
 
             console.log("[GenerateImage] Content length:", content.length)
 
