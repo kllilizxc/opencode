@@ -4,23 +4,24 @@ import fs from "fs/promises"
 
 // Plugin-style tool definition
 export default {
-    description: `generate_image(prompt: string, size?: string)
+    description: `generate_image(prompt: string, aspectRatio?: string)
 
 - prompt: A detailed text description of the image you want to generate. NO NEED to mention transparent background(or anything similar) for pngs!
-- size: Optional. The size of the image to generate (support: "1024x1024" (1:1), "1280x720" (16:9), "720x1280" (9:16), "1216x896" (4:3)). Defaults to "1024x1024".
+- aspectRatio: Optional. The desired aspect ratio of the generated image (e.g., "16:9", "1:1", "4:3", "9:16"). Defaults to "1:1". The system will generate a standard 1024x1024 image and crop it to the center to match this ratio.
 - format: Optional. The format of image file (support: "jpg", "png"), default: "jpg".
 
 ## Examples
 
-generate_image(prompt: "A futuristic city with flying cars at sunset", size: "1280x720", "jpg")
-generate_image(prompt: "A cute pixel art cat", size: "1024x1024", "png")
+generate_image(prompt: "A futuristic city with flying cars at sunset", aspectRatio: "16:9", "jpg")
+generate_image(prompt: "A cute pixel art cat", aspectRatio: "1:1", "png")
+generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png")
 `,
     args: {
         prompt: z.string().describe("The text prompt to generate an image for. NO NEED to mention transparent background(or anything similar) for pngs!"),
-        size: z
-            .enum(["1024x1024", "1280x720", "720x1280", "1216x896"])
+        aspectRatio: z
+            .string()
             .optional()
-            .describe('The size of the image (default: "1024x1024"). Support: "1024x1024", "1280x720", "720x1280", "1216x896"'),
+            .describe('The aspect ratio of the image (default: "1:1"). Examples: "16:9", "4:3", "1:1"'),
         format: z.enum(["jpg", "png"])
             .optional()
             .describe('The format of image file, default: "jpg"')
@@ -32,7 +33,7 @@ generate_image(prompt: "A cute pixel art cat", size: "1024x1024", "png")
             always: [],
             metadata: {
                 prompt: params.prompt,
-                size: params.size,
+                aspectRatio: params.aspectRatio,
                 format: params.format
             },
         })
@@ -47,123 +48,129 @@ generate_image(prompt: "A cute pixel art cat", size: "1024x1024", "png")
 
         const model = "gemini-3-pro-image"
 
+        // Helper to parse aspect ratio
+        let targetRatio = 1
+        if (params.aspectRatio) {
+            const parts = params.aspectRatio.split(':')
+            if (parts.length === 2) {
+                targetRatio = parseFloat(parts[0]) / parseFloat(parts[1])
+            } else {
+                const parsed = parseFloat(params.aspectRatio)
+                if (!isNaN(parsed)) targetRatio = parsed
+            }
+        }
+
+        // Base generation size is always 1024x1024 for simplicity
+        const baseSize = 1024
+        let cropW = baseSize
+        let cropH = baseSize
+
+        // Calculate crop dimensions to fit within baseSize while maintaining targetRatio
+        // Strategy: Maximize one dimension to 1024, adjust the other.
+        // Since base is square 1024x1024:
+        // If wider than 1:1, width = 1024, height = 1024 / ratio
+        // If taller than 1:1, height = 1024, width = 1024 * ratio
+
+        if (targetRatio > 1) {
+            // Wide
+            cropH = Math.round(baseSize / targetRatio)
+        } else {
+            // Tall (or square)
+            cropW = Math.round(baseSize * targetRatio)
+        }
+
         try {
             // Append green background instruction to prompt for easier removal
-            const promptWithGreenScreen = `${params.prompt}${params.format === 'png' ? ', solid green background (#00FF00)' : ''}`
+            let modifiedPrompt = params.prompt
 
-            const response = await client.chat.completions.create({
-                model: model,
-                messages: [{
-                    "role": "user",
-                    "content": promptWithGreenScreen
-                }],
-                tools: [{
-                    type: "function",
-                    function: {
-                        name: "generate_image",
-                        description: "Generates an image based on the prompt",
-                        parameters: {
-                            type: "object",
-                            properties: {
-                                prompt: { type: "string" }
-                            }
-                        }
-                    }
-                }]
-            } as any)
+            if (params.format === 'png') {
+                modifiedPrompt += ", solid green background (#00FF00)"
+            }
 
-            let imageUrl = ""
-            let buffer: Buffer
+            modifiedPrompt = `Draw the image on the green area, keep the same aspect ratio as the green area: ${modifiedPrompt}`
 
-            let content = response.choices[0].message.content
+            // Generate guide PNG buffer (1024x1024 with green target area)
+            const { genGuideImage, cropImage } = await import("@game-agent/common")
+
+            // genGuideImage returns a data URI "data:image/png;base64,..."
+            // We generate a full 1024x1024 guide with the target cropW/cropH centered
+            const guidePngDataUrl = await genGuideImage(cropW, cropH, 1024)
+            const base64Data = guidePngDataUrl.split(";base64,").pop()
+            if (!base64Data) throw new Error("Failed to generate guide PNG base64")
+            const imageBuffer = Buffer.from(base64Data, "base64")
+
+            // Create a File-like object or use fs to create a temp file for OpenAI SDK
+            // The SDK expects `Uploadable` which can be `Fs.ReadStream` or `File`.
+            // In Node, we can use `fs.createReadStream` from a temp file, or pass a mock File object if supported.
+            // Easiest reliable way with OpenAI Node SDK is often writing to a temp file.
+
+            const tempFilePath = path.join(ctx.worktree, `temp-${Date.now()}.png`)
+            await fs.writeFile(tempFilePath, imageBuffer)
+
+            // We need to import fs for createReadStream
+            const { createReadStream } = await import("fs")
+
+            console.log(`[GenerateImage] Target Ratio: ${targetRatio}, ROI: ${cropW}x${cropH} centered in 1024x1024.`)
+
+            let response
+            try {
+                response = await client.images.edit({
+                    model: model,
+                    image: createReadStream(tempFilePath),
+                    prompt: modifiedPrompt,
+                    n: 1,
+                    // We must use 1024x1024 as the canvas size for the API
+                    size: "1024x1024",
+                    response_format: "b64_json"
+                } as any)
+            } finally {
+                // Cleanup temp file
+                await fs.unlink(tempFilePath).catch(() => { })
+            }
+
+            const content = response.data?.[0]?.b64_json
             if (!content) {
                 throw new Error("No content received from image generation model")
             }
 
             console.log("[GenerateImage] Content length:", content.length)
 
-            // Extract all potential image URLs/Data URIs
-            // 1. Data URI pattern: data:image/... up to closing parenthesis or space
-            // 2. Markdown pattern: ![...](...)
+            // The content is directly the base64 string
+            let buffer = Buffer.from(content, "base64")
 
-            let extractedUrl = ""
+            // --- Post-Processing: Crop back to ROI ---
+            try {
+                // Crop from 1024x1024 center back to cropW x cropH
+                buffer = await cropImage(buffer as any, cropW, cropH)
+                console.log(`[GenerateImage] Cropped result to ${cropW}x${cropH}`)
+            } catch (error: any) {
+                console.warn("[GenerateImage] Cropping failed:", error)
+            }
 
-            // Priority 1: Data URI (most robust for base64)
-            // Use match to find the first one. The regex ensures we don't capture trailing markdown syntax
-            const dataUrlMatch = content.match(/data:image\/[^)\s]+/)
-            if (dataUrlMatch) {
-                extractedUrl = dataUrlMatch[0]
-                console.log("[GenerateImage] Found Data URI match, length:", extractedUrl.length)
-            } else {
-                // Priority 2: Markdown Image
-                const markdownMatch = content.match(/!\[.*?\]\(([\s\S]*?)\)/)
-                if (markdownMatch && markdownMatch[1]) {
-                    extractedUrl = markdownMatch[1].trim()
-                    console.log("[GenerateImage] Found Markdown URL match, length:", extractedUrl.length)
-                } else {
-                    // Priority 3: HTTP URL
-                    const httpMatch = content.match(/https?:\/\/[^\s)]+/)
-                    if (httpMatch) {
-                        extractedUrl = httpMatch[0]
-                        console.log("[GenerateImage] Found HTTP URL match, length:", extractedUrl.length)
-                    }
+            // --- Post-Processing: Green Screen Removal ---
+            let finalBuffer = buffer
+            if (params.format === 'png') {
+                try {
+                    const { removeGreenBackground } = await import("@game-agent/common")
+                    finalBuffer = await removeGreenBackground(buffer as any, 205)
+                    console.log("[GenerateImage] Green screen removal processed")
+                } catch (error: any) {
+                    console.warn("[GenerateImage] Failed to process green screen removal:", error.message)
                 }
             }
-
-            if (!extractedUrl) {
-                throw new Error(`Could not extract image URL from response. Content length: ${content.length}`)
-            }
-
-            console.log(`[GenerateImage] Extracted URL length: ${extractedUrl.length}, Total content length: ${content.length}`)
-
-            // Process the extracted URL
-            if (extractedUrl.startsWith("data:image")) {
-                imageUrl = extractedUrl
-                const base64Data = imageUrl.split(";base64,").pop()
-                if (!base64Data) {
-                    throw new Error("Invalid data URL format")
-                }
-                const cleanBase64 = base64Data.replace(/\s/g, "")
-                buffer = Buffer.from(cleanBase64, "base64")
-            }
-            // Check if content is an HTTP URL
-            else if (extractedUrl.startsWith("http")) {
-                imageUrl = extractedUrl
-                const responseImage = await fetch(imageUrl)
-                if (!responseImage.ok) {
-                    throw new Error(`Failed to download image: ${responseImage.statusText}`)
-                }
-                buffer = Buffer.from(await responseImage.arrayBuffer())
-            }
-            else {
-                throw new Error(`Invalid image URL format: ${extractedUrl.slice(0, 50)}...`)
-            }
-
-            // --- Green Screen Removal Logic ---
-            if (params.format === 'png' || !params.format) {
-                if (params.format === 'png') {
-                    try {
-                        const { removeGreenBackground } = await import("@game-agent/common")
-                        buffer = await removeGreenBackground(buffer, 205)
-                        console.log("[GenerateImage] Green screen removal processed")
-                    } catch (error: any) {
-                        console.warn("[GenerateImage] Failed to process green screen removal, saving original:", error.message)
-                    }
-                }
-            }
-            // ----------------------------------
 
             const fileName = `generated-${Date.now()}.png`
             const relativePath = path.join("assets", "generated", fileName)
             const absolutePath = path.join(ctx.worktree, relativePath)
 
             await fs.mkdir(path.dirname(absolutePath), { recursive: true })
-            await fs.writeFile(absolutePath, buffer)
+            await fs.writeFile(absolutePath, finalBuffer)
 
             const workspaceDirName = path.basename(ctx.worktree)
             const serverPath = path.join("/workspaces", workspaceDirName, relativePath)
 
-            const metadataUrl = imageUrl.startsWith("data:") ? "data:image/..." : imageUrl
+            // For the metadata URL, use a truncated data URI representation
+            const metadataUrl = `data:image/png;base64,...(size: ${content.length})`
             const output = `![${params.prompt}](${serverPath})`
 
             // Set metadata using context capability
