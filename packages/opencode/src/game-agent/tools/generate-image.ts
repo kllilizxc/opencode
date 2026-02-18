@@ -1,6 +1,7 @@
 import z from "zod"
 import path, { format } from "path"
 import fs from "fs/promises"
+import { shortId } from "@game-agent/common"
 
 // Plugin-style tool definition
 export default {
@@ -39,7 +40,7 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
         })
 
         // Dynamic import to avoid build issues if package is missing in this workspace
-        const { OpenAI } = await import("openai")
+        const { OpenAI, toFile } = await import("openai")
 
         const client = new OpenAI({
             baseURL: process.env.NANOBANANA_BASE_URL || "http://127.0.0.1:8045/v1",
@@ -99,24 +100,13 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
             if (!base64Data) throw new Error("Failed to generate guide PNG base64")
             const imageBuffer = Buffer.from(base64Data, "base64")
 
-            // Create a File-like object or use fs to create a temp file for OpenAI SDK
-            // The SDK expects `Uploadable` which can be `Fs.ReadStream` or `File`.
-            // In Node, we can use `fs.createReadStream` from a temp file, or pass a mock File object if supported.
-            // Easiest reliable way with OpenAI Node SDK is often writing to a temp file.
-
-            const tempFilePath = path.join(ctx.worktree, `temp-${Date.now()}.png`)
-            await fs.writeFile(tempFilePath, imageBuffer)
-
-            // We need to import fs for createReadStream
-            const { createReadStream } = await import("fs")
-
             console.log(`[GenerateImage] Target Ratio: ${targetRatio}, ROI: ${cropW}x${cropH} centered in 1024x1024.`)
 
             let response
             try {
                 response = await client.images.edit({
                     model: model,
-                    image: createReadStream(tempFilePath),
+                    image: await toFile(imageBuffer, "guide.png"),
                     prompt: modifiedPrompt,
                     n: 1,
                     // We must use 1024x1024 as the canvas size for the API
@@ -124,8 +114,7 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
                     response_format: "b64_json"
                 } as any)
             } finally {
-                // Cleanup temp file
-                await fs.unlink(tempFilePath).catch(() => { })
+                // No cleanup needed
             }
 
             const content = response.data?.[0]?.b64_json
@@ -159,7 +148,7 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
                 }
             }
 
-            const fileName = `generated-${Date.now()}.png`
+            const fileName = `generated-${shortId()}-${cropW}x${cropH}.${params.format}`
             const relativePath = path.join("assets", "generated", fileName)
             const absolutePath = path.join(ctx.worktree, relativePath)
 
