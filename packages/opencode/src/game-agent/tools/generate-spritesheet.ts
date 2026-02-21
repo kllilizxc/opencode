@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import { shortId, genGridGuide, generateImage, removeGreenBackground, Jimp } from "@game-agent/common"
 
 export default {
-    description: `Generates a spritesheet for animations or asset collections.
+    description: `Generates a 1024x1024 spritesheet for animations or asset collections.
 
 This tool produces a single PNG image containing a grid of sprites (frames, icons, or variations) based on your prompt and optional reference images.
 
@@ -15,6 +15,10 @@ This tool produces a single PNG image containing a grid of sprites (frames, icon
 - **referenceSpritesheet**: VERY IMPORTANT. Use this if you have a previously generated spritesheet for the same character to ensure identical scale and style across animations.
 - **characterDesign**: Use this for a static character reference.
 - **loop**: Set to true for looping animations.
+
+### Notes
+- NEVER EVER specify image size in prompt, the generated image is also 1024x1024
+- NEVER specify background color, it will always be transparent
 
 ### Examples
 - Generate animation frames: \`{"filename": "hero_walk", "prompt": "robot walking cycle", "grid": "4x4"}\`
