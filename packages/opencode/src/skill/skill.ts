@@ -48,9 +48,26 @@ export namespace Skill {
 
   const OPENCODE_SKILL_GLOB = new Bun.Glob("{skill,skills}/**/SKILL.md")
   const SKILL_GLOB = new Bun.Glob("**/SKILL.md")
+  const customSkills: Record<string, Info> = {}
+
+  export async function register(info: Info) {
+    customSkills[info.name] = info
+  }
+
+  export async function fromDirectory(dir: string): Promise<Info> {
+    const match = path.resolve(dir, "SKILL.md")
+    const md = await ConfigMarkdown.parse(match)
+    const parsed = Info.pick({ name: true, description: true }).parse(md.data)
+    return {
+      name: parsed.name,
+      description: parsed.description,
+      location: match,
+      content: md.content,
+    }
+  }
 
   export const state = Instance.state(async () => {
-    const skills: Record<string, Info> = {}
+    const scraped: Record<string, Info> = {}
     const dirs = new Set<string>()
 
     const addSkill = async (match: string) => {
@@ -69,17 +86,17 @@ export namespace Skill {
       if (!parsed.success) return
 
       // Warn on duplicate skill names
-      if (skills[parsed.data.name]) {
+      if (scraped[parsed.data.name] || customSkills[parsed.data.name]) {
         log.warn("duplicate skill name", {
           name: parsed.data.name,
-          existing: skills[parsed.data.name].location,
+          existing: (scraped[parsed.data.name] || customSkills[parsed.data.name]).location,
           duplicate: match,
         })
       }
 
       dirs.add(path.dirname(match))
 
-      skills[parsed.data.name] = {
+      scraped[parsed.data.name] = {
         name: parsed.data.name,
         description: parsed.data.description,
         location: match,
@@ -169,7 +186,9 @@ export namespace Skill {
     }
 
     return {
-      skills,
+      get skills() {
+        return { ...scraped, ...customSkills }
+      },
       dirs: Array.from(dirs),
     }
   })

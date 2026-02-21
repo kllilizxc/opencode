@@ -582,9 +582,9 @@ export namespace MessageV2 {
               const output =
                 finalAttachments.length > 0
                   ? {
-                      text: outputText,
-                      attachments: finalAttachments,
-                    }
+                    text: outputText,
+                    attachments: finalAttachments,
+                  }
                   : outputText
 
               assistantMessage.parts.push({
@@ -776,7 +776,7 @@ export namespace MessageV2 {
             if (errMsg && typeof errMsg === "string") {
               return `${msg}: ${errMsg}`
             }
-          } catch {}
+          } catch { }
 
           return `${msg}: ${e.responseBody}`
         }).trim()

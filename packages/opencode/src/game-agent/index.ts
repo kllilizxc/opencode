@@ -12,6 +12,9 @@ import { Log } from "@/util/log"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
 import { Config } from "@/config/config"
+import path from "path"
+import { Skill } from "@/skill"
+import { fileURLToPath } from "url"
 
 export { bootstrap, Session, SessionPrompt, Provider, Agent, Bus, MessageV2, Log, Instance, Config }
 
@@ -65,7 +68,7 @@ function fromPlugin(id: string, def: ToolDefinition): Tool.Info {
 
 
 export interface AgentEvent {
-  type: "session" | "text" | "text-delta" | "tool" | "tool-start" | "finished" | "error"
+  type: "session" | "text" | "text-delta" | "reasoning" | "reasoning-delta" | "tool" | "tool-start" | "finished" | "error"
   sessionId?: string
   data?: unknown
 }
@@ -87,8 +90,14 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
     const agentName = input.agent ?? await Agent.defaultAgent()
 
     // Register custom tools for this instance
-    await ToolRegistry.register(fromPlugin("generate_image", GenerateImage))
+    // await ToolRegistry.register(fromPlugin("generate_image", GenerateImage))
     await ToolRegistry.register(fromPlugin("generate_spritesheet", GenerateSpritesheet))
+
+    // Register custom skills
+    await Skill.register(await Skill.fromDirectory(path.join(path.dirname(fileURLToPath(import.meta.url)), "skills/sprite-animation")))
+    await Skill.register(await Skill.fromDirectory(path.join(path.dirname(fileURLToPath(import.meta.url)), "skills/generate-icons")))
+    await Skill.register(await Skill.fromDirectory(path.join(path.dirname(fileURLToPath(import.meta.url)), "skills/game-state-framework")))
+    await Skill.register(await Skill.fromDirectory(path.join(path.dirname(fileURLToPath(import.meta.url)), "skills/game-debug")))
 
     // Reuse existing session or create new one
     let session: Session.Info
@@ -139,6 +148,22 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
             log("text-delta", `len=${part.text.length}`)
             onEvent?.({
               type: "text-delta",
+              sessionId: session.id,
+              data: { text: part.text, id: part.id, messageID: part.messageID },
+            })
+          }
+        }
+
+        if (part.type === "reasoning") {
+          if (part.time?.end) {
+            // Final complete reasoning
+            log("reasoning", `len=${part.text.length}`)
+            onEvent?.({ type: "reasoning", sessionId: session.id, data: { text: part.text } })
+          } else {
+            // Streaming delta
+            log("reasoning-delta", `len=${part.text.length}`)
+            onEvent?.({
+              type: "reasoning-delta",
               sessionId: session.id,
               data: { text: part.text, id: part.id, messageID: part.messageID },
             })
@@ -237,17 +262,26 @@ export async function run(cwd: string, input: RunInput, onEvent?: EventCallback)
       }
     }
 
-    const result = await SessionPrompt.prompt({
-      messageID,
-      sessionID: session.id,
-      model: {
-        providerID: model.providerID,
-        modelID: model.modelID,
-      },
-      agent: agentName,
-      system: input.system,
-      parts,
-    })
+    let result: any
+    try {
+      result = await SessionPrompt.prompt({
+        messageID,
+        sessionID: session.id,
+        model: {
+          providerID: model.providerID,
+          modelID: model.modelID,
+        },
+        agent: agentName,
+        system: input.system,
+        parts,
+      })
+    } catch (error: any) {
+      console.error(`[game-agent] Fatal error in prompt loop:`, error)
+      onEvent?.({ type: "error", sessionId: session.id, data: { error: { message: error?.message || "Unknown error" } } })
+      unsubs.forEach((unsub) => unsub())
+      onEvent?.({ type: "finished", sessionId: session.id, data: { finishReason: "error" } })
+      return { session, result: null, finishReason: "error" }
+    }
 
     unsubs.forEach((unsub) => unsub())
 

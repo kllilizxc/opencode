@@ -4,24 +4,30 @@ import fs from "fs/promises"
 import { shortId, genGridGuide, generateImage, removeGreenBackground, Jimp } from "@game-agent/common"
 
 export default {
-    description: `generate_spritesheet(prompt: string, grid: string, characterDesign ?: string, loop ?: boolean, filename ?: string)
+    description: `Generates a spritesheet for animations or asset collections.
 
-Generates a spritesheet with a specific grid layout(e.g. 2x2, 4x4).
-The system will generate a single 1024x1024(or similar size based on content) image containing the grid of sprites in PNG format.
-This is useful for game assets where you need multiple related sprites(frames of animation, variations, etc.) in one file.
+This tool produces a single PNG image containing a grid of sprites (frames, icons, or variations) based on your prompt and optional reference images.
 
-## Examples
+### Parameters
+- **filename** (Required): The base name for the generated file. Saved in \`assets/generated/\`.
+- **prompt** (Required): Description of the spritesheet content. No need to specify background, it's always transparent.
+- **grid**: Layout format, e.g., "4x4", "2x2".
+- **referenceSpritesheet**: VERY IMPORTANT. Use this if you have a previously generated spritesheet for the same character to ensure identical scale and style across animations.
+- **characterDesign**: Use this for a static character reference.
+- **loop**: Set to true for looping animations.
 
-generate_spritesheet(prompt: "A walking cycle of a robot", grid: "4x4")
-generate_spritesheet(prompt: "Different fruit icons", grid: "3x3")
-generate_spritesheet(prompt: "Attack animation based on character design", grid: "3x3", characterDesign: "assets/hero.png", filename: "attack")
+### Examples
+- Generate animation frames: \`{"filename": "hero_walk", "prompt": "robot walking cycle", "grid": "4x4"}\`
+- Generate animation frames based on references: \`{"filename": "hero_attack", "prompt": "robot attack animation", "grid": "4x4", "characterDesign": "assets/hero.png", "referenceSpritesheet": "assets/generated/hero_walk.png"}\`
+- Generate a set of different icons: \`{"filename": "icons", "prompt": "4 pixel-art style icons: cat, dog, bird and elephant", "grid": "2x2"}\`
     `,
     args: {
-        prompt: z.string().describe("The text description of the spritesheet content."),
-        grid: z.string().describe('The grid layout, e.g. "1x1", "2x2", "3x4" (cols x rows). Default "2x2".'),
-        loop: z.boolean().optional().describe("Whether the spritesheet should form a looping animation."),
-        characterDesign: z.string().optional().describe("Path to an existing character design image to use as a base/reference."),
-        filename: z.string().optional().describe("Optional filename for the generated spritesheet. If provided, the file will be saved with this name in assets/generated.")
+        filename: z.string().describe("Base filename (e.g., 'hero_run'). File will be saved in assets/generated/."),
+        prompt: z.string().describe("Detailed description of the spritesheet content (e.g., 'A rogue character swinging a dagger')."),
+        grid: z.string().describe('Grid layout (cols x rows), e.g., "1x1", "2x2", "4x4". Defaults to "2x2".'),
+        loop: z.boolean().optional().describe("If true, the first and last frames will be identical for a smooth animation loop."),
+        characterDesign: z.string().optional().describe("Path to an existing character design image to use as a style base."),
+        referenceSpritesheet: z.string().optional().describe("Path to a previously generated spritesheet to match scale and style exactly."),
     },
     async execute(params: any, ctx: any) {
         await ctx.ask({
@@ -33,14 +39,10 @@ generate_spritesheet(prompt: "Attack animation based on character design", grid:
                 grid: params.grid,
                 loop: params.loop,
                 characterDesign: params.characterDesign,
+                referenceSpritesheet: params.referenceSpritesheet,
                 filename: params.filename
             },
         })
-
-        // Dynamic import
-        // const { OpenAI } = await import("openai") // No longer needed directly
-
-        // const client = new OpenAI({ ... }) // Handled in common util
 
         // Always PNG
         const format = "png"
@@ -56,57 +58,69 @@ generate_spritesheet(prompt: "Attack animation based on character design", grid:
             }
         }
 
+        if (rows !== cols) {
+            const maxSize = Math.max(rows, cols)
+            throw new Error(`Rows should be exact the same as cols, try ${maxSize}x${maxSize} instead.`)
+        }
+
         try {
-            let imageBuffer: Buffer
+            let images: Buffer[] = []
             let gridCleanup: ((buffer: Buffer) => Promise<Buffer>) | undefined
 
-            if (params.characterDesign) {
-                // Use provided character design
-                const designPath = path.isAbsolute(params.characterDesign)
-                    ? params.characterDesign
-                    : path.join(ctx.worktree, params.characterDesign)
+            // Helper to load image from workspace
+            const loadRef = async (refPath: string) => {
+                const fullPath = path.isAbsolute(refPath)
+                    ? refPath
+                    : path.join(ctx.worktree, refPath)
+                return await fs.readFile(fullPath)
+            }
 
-                console.log(`[GenerateSpritesheet] Using character design from: ${designPath} `)
-                try {
-                    imageBuffer = await fs.readFile(designPath)
-                } catch (e) {
-                    throw new Error(`Failed to read character design file: ${params.characterDesign} `)
-                }
-            } else {
-                // Generate Grid Guide
+            if (params.characterDesign) {
+                console.log(`[GenerateSpritesheet] Using character design from: ${params.characterDesign} `)
+                images.push(await loadRef(params.characterDesign))
+            }
+
+            if (params.referenceSpritesheet) {
+                console.log(`[GenerateSpritesheet] Using reference spritesheet from: ${params.referenceSpritesheet} `)
+                images.push(await loadRef(params.referenceSpritesheet))
+            }
+
+            // If no reference images provided, we need a grid guide
+            if (images.length === 0) {
                 const { guide, cleanup } = await genGridGuide(rows, cols, 1024)
-                gridCleanup = cleanup // Store for later use
+                gridCleanup = cleanup
 
                 const base64Data = guide.split(";base64,").pop()
                 if (!base64Data) throw new Error("Failed to generate guide PNG")
-                imageBuffer = Buffer.from(base64Data, "base64")
+                images.push(Buffer.from(base64Data, "base64"))
             }
 
-            console.log(`[GenerateSpritesheet] Grid: ${cols}x${rows}, Loop: ${!!params.loop} `)
+            console.log(`[GenerateSpritesheet] Grid: ${cols}x${rows}, Loop: ${!!params.loop}, Reference images: ${images.length}`)
 
             // Construct prompt
-            let modifiedPrompt = ""
+            let modifiedPrompt = `Generate a ${cols}x${rows} spritesheet. Content: ${params.prompt}. `
 
-            if (params.characterDesign) {
-                // Character design image as input
-                modifiedPrompt = `Use the provided character design image as a reference. Generate a ${cols}x${rows} spritesheet based on this character, maintaining the exact style and proportions. Content: ${params.prompt}`
+            if (params.characterDesign && params.referenceSpritesheet) {
+                modifiedPrompt += "Adhere strictly to the provided character design and reference spritesheet. The character's scale, proportions, and artistic style (including color palette and shading) must be identical across both existing and new animations. "
+            } else if (params.characterDesign) {
+                modifiedPrompt += "Use the provided character design as the definitive reference for visual style and proportions. "
+            } else if (params.referenceSpritesheet) {
+                modifiedPrompt += "Use the provided spritesheet to calibrate the character's size and artistic style. Ensure the new animation is perfectly consistent in scale and design. "
             } else {
-                // Grid guide image as input
-                modifiedPrompt = `The provided image is a grid layout guide with green boxes. Generate a ${cols}x${rows} spritesheet where each sprite fits strictly within the green boxes of the guide. Content: ${params.prompt}`
+                modifiedPrompt += `Each sprite must fit strictly within a ${1024 / cols}x${1024 / rows} resolution according to the provided grid guide. `
             }
 
             if (params.loop) {
-                modifiedPrompt += ". Make sure the animation loops smoothly, which means the first frame and last frame are exactly the same."
+                modifiedPrompt += "Ensure a seamless loop where the final frame flows naturally back into the first. "
             }
 
             // Always add green background for easier transparency removal
-            modifiedPrompt += ", solid green background (#00FF00) for easy transparency removal"
+            modifiedPrompt += "Ignore previous background style if existed, apply a solid green background (#00FF00) to the entire resulting sheet."
 
             // Use common utility
             const content = await generateImage({
-                type: "google",
-                images: [imageBuffer],
-                imageName: "guide.png",
+                type: "edit",
+                images: images,
                 prompt: modifiedPrompt,
                 aspectRatio: "1:1",
                 imageSize: "1K"

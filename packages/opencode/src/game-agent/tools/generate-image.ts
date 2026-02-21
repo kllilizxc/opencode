@@ -1,31 +1,40 @@
 import z from "zod"
 import path, { format } from "path"
 import fs from "fs/promises"
-import { shortId } from "@game-agent/common"
+import { shortId, Jimp, genGuideImage, cropImage, generateImage, removeGreenBackground } from "@game-agent/common"
+
+const MIN_SIZE = 256
 
 // Plugin-style tool definition
 export default {
-    description: `generate_image(prompt: string, aspectRatio?: string)
+    description: `generate_image(filename: string, prompt: string, size?: string, format?: string, references?: string[])
 
-- prompt: A detailed text description of the image you want to generate. NO NEED to mention transparent background(or anything similar) for pngs!
-- aspectRatio: Optional. The desired aspect ratio of the generated image (e.g., "16:9", "1:1", "4:3", "9:16"). Defaults to "1:1". The system will generate a standard 1024x1024 image and crop it to the center to match this ratio.
-- format: Optional. The format of image file (support: "jpg", "png"), default: "jpg".
+Generates an image based on a text prompt and optional reference images.
+
+### Parameters
+- **filename** (Required): The basename for the generated file. Saved in \`assets/generated/\`.
+- **prompt** (Required): A detailed text description of the image you want to generate. NO NEED to mention background for pngs!
+- **size**: Optional. The dimensions of the generated image in "WxH" format (e.g., "1024x256", "512x512", minimal size: "${MIN_SIZE}x${MIN_SIZE}", width or height can not be smaller than ${MIN_SIZE}). Defaults to "1024x1024".
+- **format**: Optional. The format of image file (support: "jpg", "png"), default: "jpg".
+- **references**: Optional. List of paths to reference images to influence style or content. If you want to generate a set of images of similar styles, you should provide an existing one as reference, and explicitly prompt to mimic the style.
 
 ## Examples
 
-generate_image(prompt: "A futuristic city with flying cars at sunset", aspectRatio: "16:9", "jpg")
-generate_image(prompt: "A cute pixel art cat", aspectRatio: "1:1", "png")
-generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png")
+generate_image(filename: "cyber_city", prompt: "A futuristic city with flying cars at sunset", size: "1024x256", format: "jpg")
+generate_image(filename: "pixel_cat", prompt: "A cute pixel art cat", size: "256x256", format: "png", references: ["assets/cat_ref.png"])
+generate_image(filename: "icon_cat", prompt: "A pixel art style icon of cat, use the same style as reference image", size: "256x256", format: "png", references: ["assets/icon_dog.png"])
 `,
     args: {
+        filename: z.string().describe("Base filename (e.g., 'hero_portrait'). File will be saved in assets/generated/."),
         prompt: z.string().describe("The text prompt to generate an image for. NO NEED to mention transparent background(or anything similar) for pngs!"),
-        aspectRatio: z
+        size: z
             .string()
             .optional()
-            .describe('The aspect ratio of the image (default: "1:1"). Examples: "16:9", "4:3", "1:1"'),
+            .describe('The dimensions of the image (default: "1024x1024"). Format: "WxH", e.g., "1024x256", "256x256".'),
         format: z.enum(["jpg", "png"])
             .optional()
-            .describe('The format of image file, default: "jpg"')
+            .describe('The format of image file, default: "jpg"'),
+        references: z.array(z.string()).optional().describe("List of paths to reference images to influence style or content."),
     },
     async execute(params: any, ctx: any) {
         await ctx.ask({
@@ -34,61 +43,70 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
             always: [],
             metadata: {
                 prompt: params.prompt,
-                aspectRatio: params.aspectRatio,
-                format: params.format
+                size: params.size,
+                format: params.format,
+                filename: params.filename,
+                references: params.references
             },
         })
-
-        // Dynamic import to avoid build issues if package is missing in this workspace
-        // const { OpenAI } = await import("openai") // No longer needed directly
-
-        // const client = new OpenAI({ ... }) // Handled in common util
-
-
-
-        // Helper to parse aspect ratio
-        let targetRatio = 1
-        if (params.aspectRatio) {
-            const parts = params.aspectRatio.split(':')
-            if (parts.length === 2) {
-                targetRatio = parseFloat(parts[0]) / parseFloat(parts[1])
-            } else {
-                const parsed = parseFloat(params.aspectRatio)
-                if (!isNaN(parsed)) targetRatio = parsed
-            }
-        }
 
         // Base generation size is always 1024x1024 for simplicity
         const baseSize = 1024
         let cropW = baseSize
         let cropH = baseSize
 
-        // Calculate crop dimensions to fit within baseSize while maintaining targetRatio
-        // Strategy: Maximize one dimension to 1024, adjust the other.
-        // Since base is square 1024x1024:
-        // If wider than 1:1, width = 1024, height = 1024 / ratio
-        // If taller than 1:1, height = 1024, width = 1024 * ratio
-
-        if (targetRatio > 1) {
-            // Wide
-            cropH = Math.round(baseSize / targetRatio)
-        } else {
-            // Tall (or square)
-            cropW = Math.round(baseSize * targetRatio)
+        // Parse size string "WxH"
+        if (params.size) {
+            const parts = params.size.split('x')
+            if (parts.length === 2) {
+                const w = parseInt(parts[0])
+                const h = parseInt(parts[1])
+                if (w < MIN_SIZE || h < MIN_SIZE) {
+                    throw new Error(`The given image size is illegal, the minimal side size should be ${MIN_SIZE}`)
+                }
+                if (!isNaN(w) && !isNaN(h)) {
+                    cropW = w
+                    cropH = h
+                }
+            }
         }
 
+
         try {
+            // Helper to load image from workspace
+            const loadRef = async (refPath: string) => {
+                const fullPath = path.isAbsolute(refPath)
+                    ? refPath
+                    : path.join(ctx.worktree, refPath)
+                return await fs.readFile(fullPath)
+            }
+
+            const inputImages: Buffer[] = []
+
+            // Load reference images if provided
+            if (params.references && params.references.length > 0) {
+                console.log(`[GenerateImage] Loading ${params.references.length} reference images`)
+                for (const ref of params.references) {
+                    try {
+                        inputImages.push(await loadRef(ref))
+                    } catch (e: any) {
+                        console.warn(`[GenerateImage] Failed to load reference: ${ref}`, e.message)
+                    }
+                }
+            }
+
             // Append green background instruction to prompt for easier removal
             let modifiedPrompt = params.prompt
 
-            if (params.format === 'png') {
-                modifiedPrompt += ", solid green background (#00FF00)"
+            if (params.references && params.references.length > 0) {
+                modifiedPrompt += ". Use the provided reference images as a strong reference for style and content. "
             }
 
-            modifiedPrompt = `Draw the image on the green area, keep the same aspect ratio as the green area: ${modifiedPrompt}`
+            if (params.format === 'png') {
+                modifiedPrompt += ", ignore previous background if existed, use solid green background (#00FF00)"
+            }
 
-            // Generate guide PNG buffer (1024x1024 with green target area)
-            const { genGuideImage, cropImage } = await import("@game-agent/common")
+            modifiedPrompt = `Draw the image on the green area of the last image, make sure the drawing size is exactly same as the green area, no more no less: ${modifiedPrompt}.`
 
             // genGuideImage returns a data URI "data:image/png;base64,..."
             // We generate a full 1024x1024 guide with the target cropW/cropH centered
@@ -97,14 +115,25 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
             if (!base64Data) throw new Error("Failed to generate guide PNG base64")
             const imageBuffer = Buffer.from(base64Data, "base64")
 
-            console.log(`[GenerateImage] Target Ratio: ${targetRatio}, ROI: ${cropW}x${cropH} centered in 1024x1024.`)
+            // debug: save guide image
+            // const _fileName = 'guide-' + shortId()
+            // const _relativePath = path.join("assets", "generated", _fileName)
+            // const _absolutePath = path.join(ctx.worktree, _relativePath)
+
+            // await fs.mkdir(path.dirname(_absolutePath), { recursive: true })
+            // await fs.writeFile(_absolutePath, imageBuffer)
+
+            // Add guide image to input images
+            inputImages.push(imageBuffer)
+
+            console.log(`[GenerateImage] Target Size: ${cropW}x${cropH} centered in 1024x1024.`)
 
             // Use common utility
-            const { generateImage } = await import("@game-agent/common")
+            // Use common utility
 
             const content = await generateImage({
                 type: "google",
-                images: [imageBuffer],
+                images: inputImages,
                 imageName: "guide.png",
                 prompt: modifiedPrompt
             })
@@ -127,7 +156,6 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
             let finalBuffer = buffer
             if (params.format === 'png') {
                 try {
-                    const { removeGreenBackground } = await import("@game-agent/common")
                     finalBuffer = await removeGreenBackground(buffer as any, 205)
                     console.log("[GenerateImage] Green screen removal processed")
                 } catch (error: any) {
@@ -135,7 +163,14 @@ generate_image(prompt: "A tall portrait of a knight", aspectRatio: "9:16", "png"
                 }
             }
 
-            const fileName = `generated-${shortId()}-${cropW}x${cropH}.${params.format}`
+
+            // Get dimensions and ensure format matches extension (Always PNG)
+            const img = await Jimp.read(finalBuffer)
+            const w = img.bitmap.width
+            const h = img.bitmap.height
+
+            const fileId = params.filename || `image-${shortId()}`
+            const fileName = `${fileId}-${w}x${h}.${params.format || 'png'}`
             const relativePath = path.join("assets", "generated", fileName)
             const absolutePath = path.join(ctx.worktree, relativePath)
 
