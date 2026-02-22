@@ -17,7 +17,7 @@ This tool produces a single PNG image containing a grid of sprites (frames, icon
 - **loop**: Set to true for looping animations.
 
 ### Notes
-- NEVER EVER specify image size in prompt, the generated image is also 1024x1024
+- NEVER EVER specify image size(800x600 e.g.) in prompt, the generated image is also 1024x1024
 - NEVER specify background color, it will always be transparent
 
 ### Examples
@@ -119,7 +119,7 @@ This tool produces a single PNG image containing a grid of sprites (frames, icon
             }
 
             // Always add green background for easier transparency removal
-            modifiedPrompt += "Ignore previous background style if existed, apply a solid green background (#00FF00) to the entire resulting sheet."
+            modifiedPrompt += "Ignore previous background style if existed, apply a solid green background (#00FF00) to the entire resulting sheet. Also ignore any sizes if existed, always generate the image at size 1024x1024."
 
             // Use common utility
             const content = await generateImage({
